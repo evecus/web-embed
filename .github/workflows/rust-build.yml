@@ -1,0 +1,109 @@
+name: Build Rust binaries (reusable)
+
+# 被 it-tools / metacubexd / zashboard 三个 workflow 调用：
+# 取前端产物 -> 在各平台原生编译 Rust 单二进制 -> 汇总发布 Release
+
+on:
+  workflow_call:
+    inputs:
+      crate_dir:
+        description: 'Crate directory in this repo, e.g. it-tools-server'
+        type: string
+        required: true
+      embed_dir:
+        description: 'Directory name the crate embeds (rust-embed folder): dist or public'
+        type: string
+        required: true
+      asset_prefix:
+        description: 'Release file prefix, e.g. it-tools -> it-tools_linux_amd64'
+        type: string
+        required: true
+      frontend_artifact:
+        description: 'Name of the uploaded frontend build artifact'
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      release_body:
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os_name }}/${{ matrix.arch_name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-musl,  os_name: linux,   arch_name: amd64, ext: '' }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, os_name: linux,   arch_name: arm64, ext: '' }
+          - { runner: macos-latest,     target: x86_64-apple-darwin,        os_name: darwin,  arch_name: amd64, ext: '' }
+          - { runner: macos-latest,     target: aarch64-apple-darwin,       os_name: darwin,  arch_name: arm64, ext: '' }
+          - { runner: windows-latest,   target: x86_64-pc-windows-msvc,     os_name: windows, arch_name: amd64, ext: '.exe' }
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.frontend_artifact }}
+          path: repo/${{ inputs.crate_dir }}/${{ inputs.embed_dir }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repo/${{ inputs.crate_dir }}
+          key: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        working-directory: repo/${{ inputs.crate_dir }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Collect binary
+        shell: bash
+        run: |
+          mkdir -p release
+          OUT="${{ inputs.asset_prefix }}_${{ matrix.os_name }}_${{ matrix.arch_name }}${{ matrix.ext }}"
+          cp "repo/${{ inputs.crate_dir }}/target/${{ matrix.target }}/release/${{ inputs.crate_dir }}${{ matrix.ext }}" "release/$OUT"
+          ls -lh release/
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          body: ${{ inputs.release_body }}
+          files: release/*
