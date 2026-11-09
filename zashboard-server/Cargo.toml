@@ -1,0 +1,15 @@
+[package]
+name = "zashboard-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust-embed = { version = "8", features = ["mime-guess"] }
+tiny_http = "0.12"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,69 @@
+name: Build it-tools
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.upstream.outputs.sha }}
+      tag: ${{ steps.tag.outputs.name }}
+    steps:
+      # ── 1. 拉取最新 it-tools 源码 ─────────────────────────────────────────
+      - name: Clone it-tools
+        run: git clone --depth=1 https://github.com/CorentinTh/it-tools.git frontend
+
+      - name: Get upstream commit SHA
+        id: upstream
+        run: |
+          cd frontend
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # ── 2. 构建前端 ────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend
+        run: pnpm build
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      # ── 3. 生成 tag 名 ─────────────────────────────────────────────────────
+      - name: Generate tag name
+        id: tag
+        run: echo "name=it-tools-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.sha }}" >> $GITHUB_OUTPUT
+
+  # ── 4. 编译 Rust 单二进制并发布 ───────────────────────────────────────────
+  rust:
+    needs: frontend
+    uses: ./.github/workflows/rust-build.yml
+    permissions:
+      contents: write
+    with:
+      crate_dir: it-tools-server
+      embed_dir: dist
+      asset_prefix: it-tools
+      frontend_artifact: frontend-dist
+      tag: ${{ needs.frontend.outputs.tag }}
+      release_body: |
+        Built from [CorentinTh/it-tools@${{ needs.frontend.outputs.sha }}](https://github.com/CorentinTh/it-tools/commit/${{ needs.frontend.outputs.sha }})

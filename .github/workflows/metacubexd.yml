@@ -1,0 +1,72 @@
+name: Build metacubexd
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.upstream.outputs.sha }}
+      tag: ${{ steps.tag.outputs.name }}
+    steps:
+      # ── 1. 拉取最新 metacubexd 源码 ───────────────────────────────────────
+      - name: Clone metacubexd
+        run: git clone --depth=1 https://github.com/MetaCubeX/metacubexd.git frontend
+
+      - name: Get upstream commit SHA
+        id: upstream
+        run: |
+          cd frontend
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # ── 2. 构建前端 ────────────────────────────────────────────────────────
+      #   metacubexd 使用 Nuxt，静态导出命令是 pnpm generate
+      #   输出目录: frontend/.output/public/
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          # 不指定 version，自动读取 metacubexd/package.json 的 packageManager 字段
+          package_json_file: frontend/package.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Generate static files
+        working-directory: frontend
+        run: pnpm generate
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-public
+          path: frontend/.output/public
+
+      # ── 3. 生成 tag 名 ─────────────────────────────────────────────────────
+      - name: Generate tag name
+        id: tag
+        run: echo "name=metacubexd-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.sha }}" >> $GITHUB_OUTPUT
+
+  # ── 4. 编译 Rust 单二进制并发布 ───────────────────────────────────────────
+  rust:
+    needs: frontend
+    uses: ./.github/workflows/rust-build.yml
+    permissions:
+      contents: write
+    with:
+      crate_dir: metacubexd-server
+      embed_dir: public
+      asset_prefix: metacubexd
+      frontend_artifact: frontend-public
+      tag: ${{ needs.frontend.outputs.tag }}
+      release_body: |
+        Built from [MetaCubeX/metacubexd@${{ needs.frontend.outputs.sha }}](https://github.com/MetaCubeX/metacubexd/commit/${{ needs.frontend.outputs.sha }})

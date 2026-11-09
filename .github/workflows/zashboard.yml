@@ -1,0 +1,102 @@
+name: Build zashboard
+
+on:
+  workflow_dispatch:
+    inputs:
+      font_mode:
+        description: 'Font build mode'
+        required: true
+        default: 'MiSans'
+        type: choice
+        options:
+          - default
+          - cdn-fonts
+          - MiSans
+          - PingFang
+          - SarasaUi
+          - FiraSans
+          - SystemUI
+
+permissions:
+  contents: write
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.upstream.outputs.sha }}
+      font: ${{ steps.font.outputs.mode }}
+      tag: ${{ steps.tag.outputs.name }}
+    steps:
+      # ── 1. 拉取最新 zashboard 源码 ────────────────────────────────────────
+      - name: Clone zashboard
+        run: git clone --depth=1 https://github.com/Zephyruso/zashboard.git frontend
+
+      - name: Get upstream commit SHA
+        id: upstream
+        run: |
+          cd frontend
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # ── 2. 确定字体模式（schedule 触发时用默认值 MiSans）────────────────────
+      - name: Determine font mode
+        id: font
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.font_mode }}" >> $GITHUB_OUTPUT
+          else
+            echo "mode=MiSans" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 3. 构建前端 ────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          MODE="${{ steps.font.outputs.mode }}"
+          if [ "$MODE" = "default" ]; then
+            pnpm vite build
+          else
+            pnpm vite build --mode "$MODE"
+          fi
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      # ── 4. 生成 tag 名 ─────────────────────────────────────────────────────
+      - name: Generate tag name
+        id: tag
+        run: |
+          echo "name=zashboard-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.sha }}-${{ steps.font.outputs.mode }}" >> $GITHUB_OUTPUT
+
+  # ── 5. 编译 Rust 单二进制并发布 ───────────────────────────────────────────
+  rust:
+    needs: frontend
+    uses: ./.github/workflows/rust-build.yml
+    permissions:
+      contents: write
+    with:
+      crate_dir: zashboard-server
+      embed_dir: dist
+      asset_prefix: zashboard_${{ needs.frontend.outputs.font }}
+      frontend_artifact: frontend-dist
+      tag: ${{ needs.frontend.outputs.tag }}
+      release_body: |
+        Built from [Zephyruso/zashboard@${{ needs.frontend.outputs.sha }}](https://github.com/Zephyruso/zashboard/commit/${{ needs.frontend.outputs.sha }})
+        Font mode: `${{ needs.frontend.outputs.font }}`

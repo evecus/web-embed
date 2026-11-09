@@ -1,0 +1,134 @@
+name: Build Sub-Store
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      # ── 1. 获取最新版本号 ──────────────────────────────────────────────────
+      - name: Get latest Sub-Store backend version
+        id: backend
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/sub-store-org/Sub-Store/releases/latest | jq -r .tag_name)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Latest backend version: $VERSION"
+
+      - name: Get latest Sub-Store frontend version
+        id: frontend_ver
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/sub-store-org/Sub-Store-Front-End/releases/latest | jq -r .tag_name)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Latest frontend version: $VERSION"
+
+      # ── 2. 下载后端 bundle ─────────────────────────────────────────────────
+      - name: Download backend bundle
+        run: |
+          curl -L \
+            https://github.com/sub-store-org/Sub-Store/releases/latest/download/sub-store.bundle.js \
+            -o sub-store.bundle.js
+          echo "Backend downloaded: $(wc -c < sub-store.bundle.js) bytes"
+
+      # ── 3. 下载前端并打包为 zip ────────────────────────────────────────────
+      - name: Download and repack frontend
+        run: |
+          curl -L \
+            https://github.com/sub-store-org/Sub-Store-Front-End/releases/latest/download/dist.zip \
+            -o frontend-dist.zip
+          echo "Frontend zip downloaded: $(wc -c < frontend-dist.zip) bytes"
+          # 验证解压正常
+          unzip -t frontend-dist.zip | tail -1
+
+      # ── 4. 准备 bun 构建目录 ───────────────────────────────────────────────
+      - name: Prepare build directory
+        run: |
+          mkdir -p build
+          cp repo/sub-store-server/main.ts build/
+          cp sub-store.bundle.js build/
+          cp frontend-dist.zip build/
+
+      # ── 5. 安装 Bun ────────────────────────────────────────────────────────
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # ── 6. 交叉编译为各平台单二进制 ───────────────────────────────────────
+      - name: Build binaries
+        run: |
+          cd build
+          mkdir -p ../release
+
+          targets=(
+            "bun-linux-x64"
+            "bun-linux-arm64"
+            "bun-darwin-x64"
+            "bun-darwin-arm64"
+            "bun-windows-x64"
+          )
+
+          names=(
+            "sub-store_linux_amd64"
+            "sub-store_linux_arm64"
+            "sub-store_darwin_amd64"
+            "sub-store_darwin_arm64"
+            "sub-store_windows_amd64.exe"
+          )
+
+          for i in "${!targets[@]}"; do
+            target="${targets[$i]}"
+            name="${names[$i]}"
+            echo "Building $name ($target) ..."
+            bun build main.ts \
+              --compile \
+              --target "$target" \
+              --assets "sub-store.bundle.js" \
+              --assets "frontend-dist.zip" \
+              --outfile "../release/$name"
+          done
+
+          ls -lh ../release/
+
+      # ── 7. 生成 tag 名 ─────────────────────────────────────────────────────
+      - name: Generate tag name
+        id: tag
+        run: |
+          echo "name=sub-store-$(date -u +%Y%m%d)-be${{ steps.backend.outputs.version }}-fe${{ steps.frontend_ver.outputs.version }}" >> $GITHUB_OUTPUT
+
+      # ── 8. Create Release ──────────────────────────────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body: |
+            | 组件 | 版本 |
+            |------|------|
+            | Backend | [${{ steps.backend.outputs.version }}](https://github.com/sub-store-org/Sub-Store/releases/tag/${{ steps.backend.outputs.version }}) |
+            | Frontend | [${{ steps.frontend_ver.outputs.version }}](https://github.com/sub-store-org/Sub-Store-Front-End/releases/tag/${{ steps.frontend_ver.outputs.version }}) |
+
+            **用法：**
+            ```bash
+            # 默认端口：API=3000，前端=3001
+            ./sub-store_linux_amd64
+
+            # 自定义端口
+            ./sub-store_linux_amd64 --api-port 3000 --frontend-port 3001
+
+            # 查看帮助
+            ./sub-store_linux_amd64 --help
+            ```
+
+            访问前端：`http://localhost:3001`
+            API 地址：`http://localhost:3000`
+          files: release/*
