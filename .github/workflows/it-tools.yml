@@ -7,15 +7,12 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  frontend:
     runs-on: ubuntu-latest
-
+    outputs:
+      sha: ${{ steps.upstream.outputs.sha }}
+      tag: ${{ steps.tag.outputs.name }}
     steps:
-      - name: Checkout this repo
-        uses: actions/checkout@v4
-        with:
-          path: repo
-
       # ── 1. 拉取最新 it-tools 源码 ─────────────────────────────────────────
       - name: Clone it-tools
         run: git clone --depth=1 https://github.com/CorentinTh/it-tools.git frontend
@@ -45,50 +42,28 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
-      # ── 3. 组装 Go 项目 ────────────────────────────────────────────────────
-      - name: Assemble Go project
-        run: |
-          cp -r repo/it-tools-server build
-          cp -r frontend/dist build/dist
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
 
-      # ── 4. 生成 tag 名 ─────────────────────────────────────────────────────
+      # ── 3. 生成 tag 名 ─────────────────────────────────────────────────────
       - name: Generate tag name
         id: tag
         run: echo "name=it-tools-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.sha }}" >> $GITHUB_OUTPUT
 
-      # ── 5. Setup Go ────────────────────────────────────────────────────────
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-
-      # ── 6. 交叉编译 ────────────────────────────────────────────────────────
-      - name: Build binaries
-        run: |
-          cd build
-          platforms=(
-            "linux/amd64"
-            "linux/arm64"
-            "darwin/amd64"
-            "darwin/arm64"
-            "windows/amd64"
-          )
-          mkdir -p ../release
-          for platform in "${platforms[@]}"; do
-            OS="${platform%/*}"
-            ARCH="${platform#*/}"
-            OUTPUT="it-tools_${OS}_${ARCH}"
-            [ "$OS" = "windows" ] && OUTPUT="${OUTPUT}.exe"
-            echo "Building $OUTPUT ..."
-            GOOS=$OS GOARCH=$ARCH go build -ldflags="-s -w" -o "../release/$OUTPUT" .
-          done
-
-      # ── 7. Create Release ──────────────────────────────────────────────────
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: ${{ steps.tag.outputs.name }}
-          body: |
-            Built from [CorentinTh/it-tools@${{ steps.upstream.outputs.sha }}](https://github.com/CorentinTh/it-tools/commit/${{ steps.upstream.outputs.sha }})
-          files: release/*
+  # ── 4. 编译 Rust 单二进制并发布 ───────────────────────────────────────────
+  rust:
+    needs: frontend
+    uses: ./.github/workflows/rust-build.yml
+    permissions:
+      contents: write
+    with:
+      crate_dir: it-tools-server
+      embed_dir: dist
+      asset_prefix: it-tools
+      frontend_artifact: frontend-dist
+      tag: ${{ needs.frontend.outputs.tag }}
+      release_body: |
+        Built from [CorentinTh/it-tools@${{ needs.frontend.outputs.sha }}](https://github.com/CorentinTh/it-tools/commit/${{ needs.frontend.outputs.sha }})
